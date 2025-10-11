@@ -139,7 +139,7 @@ traefik_version:
     v3.0: 3
 
 odoo_initial_lang:
-  default: en_US
+  default: es_ES
   type: str
   help: >-
     If you want to initialize Odoo automatically in a specific language, write it here.
@@ -188,7 +188,7 @@ project_author:
     Tell me who you are.
 
     If private modules do not include this author, pylint will warn you.
-  default: Tecnativa
+  default: Halltic Tech S.L.
 
 project_name:
   type: str

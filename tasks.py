@@ -84,3 +84,49 @@ def test(c, verbose=False, sequential=False, docker=True):
     cmd = f"poetry run pytest {flags} tests"
     with c.cd(str(TEMPLATE_ROOT)):
         c.run(cmd)
+
+@task(
+    help={
+        "length": "Length of the password to generate. Default: 64",
+    },
+)
+def generate_password(c, length=64):
+    """Generate secure passwords and create environment files.
+
+    Generates secure passwords for ADMIN_PASSWORD and POSTGRES_PASSWORD,
+    and creates the necessary .env files in the .docker directory.
+    """
+    def _generate_password(length=64):
+        """Generate a secure password with mixed character types."""
+        alphabet = string.ascii_letters + string.digits + string.punctuation
+        while True:
+            password = "".join(secrets.choice(alphabet) for _ in range(length))
+            # Ensure at least one character from each category
+            if (
+                any(c.islower() for c in password)
+                and any(c.isupper() for c in password)
+                and any(c.isdigit() for c in password)
+                and any(c in string.punctuation for c in password)
+            ):
+                return password
+
+    output_dir = PROJECT_ROOT / ".docker"
+    output_dir.mkdir(exist_ok=True)
+
+    admin_password = _generate_password(length)
+    postgres_password = _generate_password(length)
+
+    # Create odoo.env
+    with open(output_dir / "odoo.env", "w") as f:
+        f.write(f"ADMIN_PASSWORD={admin_password}\n")
+
+    # Create db-creation.env
+    with open(output_dir / "db-creation.env", "w") as f:
+        f.write(f"POSTGRES_PASSWORD={postgres_password}\n")
+
+    # Create db-access.env
+    with open(output_dir / "db-access.env", "w") as f:
+        f.write(f"PGPASSWORD={postgres_password}\n")
+
+    _logger.info("Passwords and env files generated in .docker/")
+    _logger.info(f"Generated passwords with length: {length}")
