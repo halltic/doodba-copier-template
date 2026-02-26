@@ -138,6 +138,18 @@ traefik_version:
     v2.4: 2
     v3.0: 3
 
+compose_version:
+  type: str
+  help: >-
+    Indicate the Docker Compose version.
+
+    Used to generate the Docker Compose files so that they are compatible with the
+    indicated version.
+  default: "{{ 'v1' if _copier_operation == 'update' else 'v2+'}}"
+  choices:
+    - v1
+    - v2+
+
 odoo_initial_lang:
   default: es_ES
   type: str
@@ -379,7 +391,7 @@ cidr_whitelist:
     ⚠️ It must be a list. And this is only supported if you deploy with Traefik 2+.
 
 postgres_version:
-  default: "17"
+  default: "18"
   help: >-
     Which PostgreSQL version do you want to deploy? (Recommended: for new instances
     always use the latest version. Version 9.6 has no backup support.)
@@ -394,6 +406,7 @@ postgres_version:
     "15": "15"
     "16": "16"
     "17": "17"
+    "18": "18"
   validator: >-
     {% if postgres_version|int > 0 %} {% if (odoo_version >= 16.0 and
     postgres_version|int < 12) or (odoo_version >= 14.0 and postgres_version|int < 10)

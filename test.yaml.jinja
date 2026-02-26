@@ -3,8 +3,10 @@
 {%- import "_traefik2_labels.yml.jinja" as traefik2_labels -%}
 {%- import "_traefik3_labels.yml.jinja" as traefik3_labels -%}
 {%- set _key = traefik2_labels.key(project_name, odoo_version, "test") -%}
+{% if compose_version == "v1" %}
 version: "2.4"
 
+{% endif %}
 services:
   odoo:
     extends:
@@ -139,7 +141,7 @@ services:
       {%- endcall %}
       {%- endif %}
     volumes:
-      - "smtpconf:/etc/mailhog:ro,z"
+      - "smtpconf:/etc/mailhog:ro"
     entrypoint: [sh, -c]
     command:
       - test -r /etc/mailhog/auth && export MH_AUTH_FILE=/etc/mailhog/auth; exec MailHog
