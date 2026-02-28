@@ -121,7 +121,7 @@ See the [contribution guidelines](CONTRIBUTING.md).
 
 # Credits
 
-This project is maintained by:
+This project is developed by:
 
 [![Tecnativa](https://www.tecnativa.com/r/H3p)](https://www.tecnativa.com/r/rIN)
 
