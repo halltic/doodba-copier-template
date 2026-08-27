@@ -7,7 +7,7 @@ import tempfile
 import textwrap
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Union
+from typing import Union
 
 import pytest
 import yaml
@@ -229,6 +229,23 @@ def traefik_host(request):
     assert " level=warn " not in traefik_logs
 
 
+def override_odoo_entrypoint(path, entrypoint=None, command=None):
+    entrypoint = entrypoint or ["sh", "-c"]
+    command = command or ["sleep 3600"]
+    override_data = yaml.safe_dump(
+        {
+            "services": {
+                "odoo": {
+                    "entrypoint": entrypoint,
+                    "command": command,
+                }
+            }
+        }
+    )
+    override_file = path / "docker-compose.override.yml"
+    override_file.write_text(override_data)
+
+
 def teardown_function(function):
     pre_commit_log = (
         Path("~") / ".cache" / "pre-commit" / "pre-commit.log"
@@ -239,7 +256,7 @@ def teardown_function(function):
 
 
 # Helpers
-def build_file_tree(spec: Dict[Union[str, Path], str], dedent: bool = True):
+def build_file_tree(spec: dict[Union[str, Path], str], dedent: bool = True):
     """Builds a file tree based on the received spec."""
     for path, contents in spec.items():
         path = Path(path)
@@ -367,9 +384,9 @@ def safe_stop_env(exec_path, purge=True):
                 and "has active endpoints" not in e.stdout
             ):
                 raise e
-            assert not _containers_running(
-                exec_path
-            ), "Containers running or not removed. 'stop [--purge]' command did not work."
+            assert not _containers_running(exec_path), (
+                "Containers running or not removed. 'stop [--purge]' command did not work."
+            )
 
 
 @contextmanager

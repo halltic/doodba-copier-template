@@ -1,29 +1,12 @@
 # Configure jinja2 defaults to make syntax highlighters lives easier
 _templates_suffix: .jinja
-
+_subdirectory: template
 # Other Copier configurations
 _min_copier_version: "9"
 _exclude:
-  - _macros
-  - _traefik*_labels.yml
-  - /.git
-  - /.github
-  - /.gitmodules
-  - /.vscode/launch.json
-  - /.vscode/settings.json
   - /**.pyc
   - /**.pyo
-  - /CONTRIBUTING.md
-  - /copier.yml
-  - /COPYING
-  - /docs
-  - /migrations.py
-  - /poetry.lock
-  - /pyproject.toml
-  - /scripts
-  - /tasks_downstream.py
-  - /tests
-  - /vendor
+  - tasks_downstream.py
 
 _skip_if_exists:
   - odoo/custom/dependencies/*.txt
@@ -94,6 +77,24 @@ _migrations:
         - db-filter-prefix-default
         - "{{ _copier_conf.dst_path }}"
         - "{{ _copier_conf.answers_file }}"
+  - version: v9.2.1
+    before:
+      - - invoke
+        - --search-root={{ _copier_conf.src_path }}
+        - --collection=migrations
+        - migrate-to-new-proxy
+        - "{{ _copier_conf.dst_path }}"
+        - "{{ _copier_conf.answers_file }}"
+  - version: v9.6.0
+    before:
+      - - invoke
+        - --search-root={{ _copier_conf.src_path }}
+        - --collection=migrations
+        - add-new-domains
+        - "{{ _copier_conf.dst_path }}"
+        - "{{ _copier_conf.answers_file }}"
+        - "9.6.0"
+        - "--varname=whitelisted_hosts_test"
 
 # Questions for the user
 odoo_version:
@@ -230,6 +231,14 @@ project_license:
     Odoo Enterprise Edition License v1.0: OEEL-1.0
     Odoo Proprietary License v1.0: OPL-1.0
 
+use_refurb:
+  default: false
+  type: bool
+  help:
+    Use refurb (https://github.com/dosisod/refurb) for refurbishing and modernizing
+    Python codebase.
+  when: "{{ odoo_version >= 13.0 }}"
+
 gitlab_url:
   type: str
   help: >-
@@ -353,6 +362,147 @@ domains_test:
 
     💡 The 1st host from the 1st domain that has no `path_prefixes` will be considered
     the main one. In the example above, it'd be `demo1.main.com`.
+domains_migration:
+  type: yaml
+  multiline: true
+  default: {}
+  placeholder: |
+    # Main domains, with TLS and cert resolved with "letsencrypt" resolver
+    - hosts:
+        - demo1.main.com
+        - demo2.main.com
+
+    # Alternate domains that redirect to main ones
+    - hosts:
+        - www.demo1.main.com
+        - old.demo1.main.com
+      redirect_to: demo1.main.com
+    - hosts:
+        - www.demo2.main.com
+        - old.demo2.main.com
+      redirect_to: demo2.main.com
+      redirect_permanent: True
+
+    # VPN-only domain, with self-signed certificate
+    - hosts:
+        - vpn.demo.main.com
+      cert_resolver: true
+  help: |
+    Configure the migration domains for this project.
+
+    The format is the same as for `prod_domains`; a list with these keys:
+
+    - hosts: The domain names. List of strings.
+    - path_prefixes: The path prefixes (if any) that will match this routing rule.
+      List of strings. Default: [].
+    - redirect_to: Apply a redirection to this other domain. By default, it will be a
+      302 redirection, but it can be turned into a 301 redirection by enabling the
+      `redirect_permanent` option.
+      String. Default: null.
+    - redirect_permanent: Return 301 instead of 302 in a Traefik redirection, making it permanent.
+      Boolean. Default: False.
+    - cert_resolver: Traefik cert resolver name. String/Boolean. Default: "letsencrypt".
+      Set it to `true` to use a self-signed certificate. Set it to `false` to
+      disable TLS in those domains. If not `false`, it will force using HTTPS.
+    - entrypoints: List of entrypoint names to use when creating this rule. Default: [].
+      Leave empty to apply this rule on all available entrypoints. Those are defined
+      in your Traefik deployment.
+
+    See https://www.tecnativa.com/r/Y0v for an example.
+
+    ⚠ Remember that you have to write one-line YAML, at least until Copier
+    supports multiline input
+
+    ⚠ Some advanced features are only available if you deploy with Traefik 2.
+
+    💡 The 1st host from the 1st domain that has no `path_prefixes` will be considered
+    the main one. In the example above, it'd be `demo1.main.com`.
+whitelisted_hosts_test:
+  type: yaml
+  multiline: true
+  default:
+    - accounts.google.com
+    - api.openrouteservice.org
+    - api.unsplash.com
+    - apis.google.com
+    - cdnjs.cloudflare.com
+    - download.geonames.org
+    - ec.europa.eu
+    - fonts.cdnfonts.com
+    - fonts.googleapis.com
+    - fonts.gstatic.com
+    - images.unsplash.com
+    - iap-services.odoo.com
+    - maps.googleapis.com
+    - media-api.odoo.com
+    - olg.api.odoo.com
+    - www.google.com
+    - www.googleapis.com
+    - www.gravatar.com
+    - undraw.co
+    - updates.maxmind.com
+    - www.ecb.europa.eu # For OCA currency_rate_update module
+    - www.xe.com # For OCA currency_rate_update_xe module
+    - sis-t.redsys.es # For redsys tests
+    - prewww1.aeat.es # Required for SII
+    - www2.agenciatributaria.gob.es # Required for SII
+    - www.openstreetmap.org # Required for partner_external_map
+    - nominatim.openstreetmap.org # Required for partner_external_map
+    - www.bizkaia.eus # Required for l10n_es_aeat_sii_oca
+    - sii.araba.eus # Required for l10n_es_aeat_sii_oca
+    - vies.api.odoo.com # Required for base_vat
+  help: |
+    Extra external hosts to allow from **test/demo/migration** instances (optional).
+
+    Example:
+      - api.example.com
+      - example.com
+
+    If you provide one or more hostnames/IPs here, the template will inject the
+    docker-whitelist-gateway setup in `test.yaml`, so the Odoo container can only
+    resolve/reach those hosts (plus whatever is already reachable via your existing
+    `globalwhitelist_shared` network).
+
+    Leave empty (`[]`) to keep the current behavior (no additional egress).
+
+whitelisted_hosts_devel:
+  type: yaml
+  multiline: true
+  default:
+    - cdnjs.cloudflare.com
+    - fonts.googleapis.com
+    - fonts.gstatic.com
+    - www.google.com
+    - www.googleapis.com
+    - www.gravatar.com
+  placeholder: |
+    - api.example.com
+    - example.com
+  help: |
+    Extra external hosts to allow from **devel** environment (optional).
+
+    If you provide one or more hostnames/IPs here, the template will inject the
+    docker-whitelist-gateway setup in `devel.yaml`, so the Odoo container can only
+    resolve/reach those hosts.
+
+whitelist_docker_project_devel:
+  type: str
+  when: "{{ (whitelisted_hosts_devel or []) | length > 0 }}"
+  default: "{{ project_name | replace('.', '-') }}"
+  help: >-
+    Docker Compose project name used by the whitelist sidecar in devel to discover
+    internal services through Docker metadata.
+
+whitelist_docker_project_test:
+  type: str
+  when: "{{ (whitelisted_hosts_test or []) | length > 0 }}"
+  default: "demo-{{ project_name | replace('.', '-') }}-{{ odoo_version | int }}"
+  help: >-
+    Docker Compose project name used by the whitelist sidecar in test/demo to discover
+    internal services through Docker metadata.
+
+    The proposed default matches our usual naming convention, but this value may need to
+    change depending on how each company/person deploys the project.
 
 paths_without_crawlers:
   multiline: true
@@ -391,7 +541,9 @@ cidr_whitelist:
     ⚠️ It must be a list. And this is only supported if you deploy with Traefik 2+.
 
 postgres_version:
-  default: "18"
+  default: >-
+    {% if odoo_version <= 12.0 %}13 {% elif odoo_version <= 14.0 %}16 {% else %}18{%
+    endif %}
   help: >-
     Which PostgreSQL version do you want to deploy? (Recommended: for new instances
     always use the latest version. Version 9.6 has no backup support.)
@@ -607,6 +759,17 @@ backup_email_to:
     Where to send those backup reports?
   default: ""
 
+backup_smtp_report_success:
+  type: bool
+  when: *backup_present
+  help: >-
+    Keep a close eye on your backup jobs!
+
+    If enabled (default), backup jobs report via SMTP regardless of exit status.
+
+    Otherwise, backup jobs only report via SMTP if one or more jobs failed.
+  default: true
+
 backup_deletion:
   default: false
   type: bool
@@ -654,3 +817,18 @@ backup_passphrase:
     restore backups.
 
     Which will be your backups passphrase?
+
+backup_backend_password:
+  secret: true
+  type: str
+  default: example-backup-backend-password
+  when: *backup_present
+  help: >-
+    ⚠️ This password is critical for security, so keep it safe. You will need it to
+    restore backups.
+
+    This password is supported by most duplicity backends (like SFTP) which are password
+    capable. If your backend uses it, setting it here will safely store it in an
+    environment variable, that is more secure than setting it in the backend url.
+
+    Which will be your backups password?

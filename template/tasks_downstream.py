@@ -4,13 +4,18 @@ This file is to be executed with https://www.pyinvoke.org/ in Python 3.8.1+.
 
 Contains common helpers to develop using this child project.
 """
+
 import json
+import operator
 import os
+import platform
+import re
 import shutil
 import stat
 import subprocess
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from glob import iglob
 from itertools import chain
@@ -110,7 +115,6 @@ def _get_cwd_addon(file):
 
 def _scan_subrepos_and_add_path_mappings(
     cw_config,
-    debugpy_configuration,
     firefox_configuration,
     chrome_configuration,
 ):
@@ -123,15 +127,6 @@ def _scan_subrepos_and_add_path_mappings(
                 {"path": str(subrepo.relative_to(PROJECT_ROOT))}
             )
 
-        # Check if subrepo is itself a doodba-copier project
-        is_doodba_subproject = False
-        answers_file = subrepo / ".copier-answers.yml"
-        if answers_file.is_file():
-            with answers_file.open() as f:
-                answers = yaml.safe_load(f) or {}
-            if "Tecnativa/doodba-copier-template" in answers.get("_src_path", ""):
-                is_doodba_subproject = True
-
         private_dir = subrepo / "odoo" / "custom" / "src" / "private"
         # Default scanning approach (1-level + addons/* + private/*)
         for addon in chain(
@@ -142,27 +137,6 @@ def _scan_subrepos_and_add_path_mappings(
             if (addon / "__manifest__.py").is_file() or (
                 addon / "__openerp__.py"
             ).is_file():
-                if is_doodba_subproject:
-                    local_path = "${workspaceFolder:%s}/odoo/custom/src/private/%s" % (  # noqa: UP031
-                        subrepo.name,
-                        addon.name,
-                    )
-                elif subrepo.name == "odoo":
-                    local_path = "${workspaceFolder:%s}/addons/%s/" % (  # noqa: UP031
-                        subrepo.name,
-                        addon.name,
-                    )
-                else:
-                    local_path = "${workspaceFolder:%s}/%s" % (  # noqa: UP031
-                        subrepo.name,
-                        addon.name,
-                    )
-                debugpy_configuration["pathMappings"].append(
-                    {
-                        "localRoot": local_path,
-                        "remoteRoot": f"/opt/odoo/auto/addons/{addon.name}/",
-                    }
-                )
                 url = f"http://localhost:{ODOO_VERSION:.0f}069/{addon.name}/static/"
                 path = "${workspaceFolder:%s}/%s/static/" % (  # noqa: UP031
                     subrepo.name,
@@ -226,13 +200,13 @@ def write_code_workspace_file(c, cw_path=None):
     cw_config.setdefault("settings", {})
     cw_config["settings"].update(
         {
-            "python.autoComplete.extraPaths": [f"{str(SRC_PATH)}/odoo"],
-            "python.analysis.extraPaths": [f"{str(SRC_PATH)}/odoo"],
+            "python.autoComplete.extraPaths": [f"{SRC_PATH}/odoo"],
+            "python.analysis.extraPaths": [f"{SRC_PATH}/odoo"],
             "python.formatting.provider": "none",
             "python.linting.flake8Enabled": True,
-            "python.linting.ignorePatterns": [f"{str(SRC_PATH)}/odoo/**/*.py"],
+            "python.linting.ignorePatterns": [f"{SRC_PATH}/odoo/**/*.py"],
             "python.linting.pylintArgs": [
-                f"--init-hook=\"import sys;sys.path.append('{str(SRC_PATH)}/odoo')\"",
+                f"--init-hook=\"import sys;sys.path.append('{SRC_PATH}/odoo')\"",
                 "--load-plugins=pylint_odoo",
             ],
             "python.linting.pylintEnabled": True,
@@ -255,7 +229,12 @@ def write_code_workspace_file(c, cw_path=None):
         "name": "Attach Python debugger to running container",
         "type": "python",
         "request": "attach",
-        "pathMappings": [],
+        "pathMappings": [
+            {
+                "localRoot": "${workspaceFolder:%s}/odoo" % root_name,  # noqa: UP031
+                "remoteRoot": "/opt/odoo",
+            }
+        ],
         "port": int(ODOO_VERSION) * 1000 + 899,
         # HACK https://github.com/microsoft/vscode-python/issues/14820
         "host": "0.0.0.0",
@@ -305,17 +284,10 @@ def write_code_workspace_file(c, cw_path=None):
             chrome_configuration,
         ],
     }
-    # Configure pathMappings for the main odoo folder
-    debugpy_configuration["pathMappings"].append(
-        {
-            "localRoot": "${workspaceFolder:odoo}/",
-            "remoteRoot": "/opt/odoo/custom/src/odoo",
-        }
-    )
+    # Configure workspace roots and path mappings
     cw_config["folders"] = []
     _scan_subrepos_and_add_path_mappings(
         cw_config,
-        debugpy_configuration,
         firefox_configuration,
         chrome_configuration,
     )
@@ -463,7 +435,7 @@ def write_code_workspace_file(c, cw_path=None):
         ],
     }
     # Sort project folders
-    cw_config["folders"].sort(key=lambda x: x["path"])
+    cw_config["folders"].sort(key=operator.itemgetter("path"))
     # Put Odoo folder just before private and top folder and map to debugpy
     odoo = SRC_PATH / "odoo"
     if odoo.is_dir():
@@ -477,6 +449,165 @@ def write_code_workspace_file(c, cw_path=None):
     with open(cw_path, "w") as cw_fd:
         json.dump(cw_config, cw_fd, indent=2)
         cw_fd.write("\n")
+
+
+def _pycharm_version_key(path):
+    """Sort PyCharm config dirs by product priority and version."""
+    name = path.name
+    # Prefer modern PyCharm/PyCharmCE names over legacy PyCharmCE2020.x
+    # style only by version
+    product_priority = (
+        1 if name.startswith("PyCharm") and not name.startswith("PyCharmCE") else 0
+    )
+    version_match = re.search(r"(\d{4})\.(\d+)", name)
+    if version_match:
+        version = tuple(map(int, version_match.groups()))
+    else:
+        version = (0, 0)
+    return product_priority, version, name
+
+
+def get_pycharm_config_dirs():
+    """Return possible PyCharm config directories for Linux, macOS and Windows."""
+    system = platform.system()
+    if system == "Linux":
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        jetbrains = base / "JetBrains"
+    elif system == "Darwin":
+        jetbrains = Path.home() / "Library" / "Application Support" / "JetBrains"
+    elif system == "Windows":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return []
+        jetbrains = Path(appdata) / "JetBrains"
+    else:
+        return []
+    candidates = list(jetbrains.glob("PyCharm*")) + list(jetbrains.glob("PyCharmCE*"))
+    return sorted({p for p in candidates if p.is_dir()}, key=_pycharm_version_key)
+
+
+def get_pycharm_tools_dir():
+    """Return the latest existing PyCharm tools directory."""
+    pycharm_dirs = get_pycharm_config_dirs()
+    if not pycharm_dirs:
+        return None
+    return pycharm_dirs[-1] / "tools"
+
+
+def write_pycharm_external_tools():
+    """Ensure required PyCharm External Tools exist."""
+    tools_dir = get_pycharm_tools_dir()
+    if not tools_dir:
+        # PyCharm not installed → silently skip
+        return
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    tools_path = tools_dir / "External Tools.xml"
+    tools_to_ensure = {
+        "Start Debug Test": "test --cur-file $FilePath$ --debugpy",
+        "Start Debug": "start --detach --debugpy",
+    }
+    if tools_path.exists():
+        try:
+            root = ET.fromstring(tools_path.read_text(encoding="utf-8"))
+        except ET.ParseError:
+            root = ET.Element("toolSet", {"name": "External Tools"})
+    else:
+        root = ET.Element("toolSet", {"name": "External Tools"})
+    existing = {tool.get("name") for tool in root.findall("tool")}
+    for name, params in tools_to_ensure.items():
+        if name in existing:
+            continue
+        tool = ET.SubElement(
+            root,
+            "tool",
+            {
+                "name": name,
+                "showInMainMenu": "false",
+                "showInEditor": "false",
+                "showInProject": "false",
+                "showInSearchPopup": "false",
+                "disabled": "false",
+                "useConsole": "true",
+                "showConsoleOnStdOut": "false",
+                "showConsoleOnStdErr": "false",
+                "synchronizeAfterRun": "true",
+            },
+        )
+        exec_node = ET.SubElement(tool, "exec")
+        ET.SubElement(exec_node, "option", {"name": "COMMAND", "value": "invoke"})
+        ET.SubElement(exec_node, "option", {"name": "PARAMETERS", "value": params})
+        ET.SubElement(
+            exec_node,
+            "option",
+            {"name": "WORKING_DIRECTORY", "value": "$ProjectFileDir$"},
+        )
+    ET.indent(root, space="  ")
+    tools_path.write_text(
+        ET.tostring(root, encoding="unicode") + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_pycharm_debug_run_configuration_file():
+    """Create/update PyCharm run configuration to attach debugpy."""
+    config_path = PROJECT_ROOT / ".idea" / "runConfigurations" / "Debug_odoo.xml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    debugpy_port = int(ODOO_VERSION) * 1000 + 899
+    xml = f"""<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Debug odoo" type="PythonDapAttachConfiguration">
+    <pathMappings>
+      <mapping local="$PROJECT_DIR$/odoo" remote="/opt/odoo" />
+    </pathMappings>
+    <option name="remoteAddress" value="localhost:{debugpy_port}" />
+    <option name="remoteRoot" />
+    <method v="2">
+      <option
+        name="ToolBeforeRunTask"
+        enabled="true"
+        actionId="Tool_External Tools_Start Debug"
+      />
+    </method>
+  </configuration>
+</component>
+"""
+    config_path.write_text(xml, encoding="utf-8")
+
+
+def write_pycharm_attach_test_debug_run_configuration_file():
+    """Create/update PyCharm DAP attach configuration for current module tests."""
+    config_path = (
+        PROJECT_ROOT
+        / ".idea"
+        / "runConfigurations"
+        / "Test_and_debug_current_module.xml"
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    debugpy_port = int(ODOO_VERSION) * 1000 + 899
+    xml = f"""<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Test and debug current module"
+    type="PythonDapAttachConfiguration">
+    <pathMappings>
+      <mapping local="$PROJECT_DIR$/odoo" remote="/opt/odoo" />
+    </pathMappings>
+    <option name="remoteAddress" value="localhost:{debugpy_port}" />
+    <option name="remoteRoot" />
+    <method v="2">
+      <option
+        name="ToolBeforeRunTask"
+        enabled="true"
+        actionId="Tool_External Tools_Start Debug Test"
+      />
+    </method>
+  </configuration>
+</component>
+"""
+    config_path.write_text(xml, encoding="utf-8")
+
+
+def write_pycharm_debugger_configurations():
+    write_pycharm_external_tools()
+    write_pycharm_debug_run_configuration_file()
+    write_pycharm_attach_test_debug_run_configuration_file()
 
 
 @task
@@ -493,6 +624,7 @@ def develop(c):
         c.run("git init")
         c.run("ln -sf devel.yaml docker-compose.yml")
         write_code_workspace_file(c)
+        write_pycharm_debugger_configurations()
         c.run("pre-commit install")
 
 
@@ -537,10 +669,13 @@ def img_build(c, pull=True):
 
 
 @task()
-def img_pull(c):
+def img_pull(c, ignore_buildable=True):
     """Pull docker images."""
+    cmd = DOCKER_COMPOSE_CMD + " pull"
+    if ignore_buildable:
+        cmd += " --ignore-buildable"
     with c.cd(str(PROJECT_ROOT)):
-        c.run(DOCKER_COMPOSE_CMD + " pull", pty=True)
+        c.run(cmd, pty=True)
 
 
 @task()
@@ -574,10 +709,7 @@ def start(c, detach=True, debugpy=False, _reload=True, port_prefix=0):
         if detach:
             cmd += " --detach"
         with c.cd(str(PROJECT_ROOT)):
-            env = dict(
-                UID_ENV,
-                DOODBA_DEBUGPY_ENABLE=str(int(debugpy)),
-            )
+            env = UID_ENV | {"DOODBA_DEBUGPY_ENABLE": str(int(debugpy))}
             if port_prefix:
                 env["PORT_PREFIX"] = str(port_prefix)
             result = c.run(
@@ -716,10 +848,9 @@ def updatepot(
     for new_file in new_files:
         file_name = os.path.basename(new_file)
         if file_name.endswith("~"):
-            os.remove(new_file)
+            Path(new_file).unlink()
             continue
-        with open(new_file) as fd:
-            content = fd.read()
+        content = Path(new_file).read_text()
         new_lines = []
         for line in content.splitlines():
             if remove_dates and (
@@ -729,11 +860,10 @@ def updatepot(
                 continue
             new_lines.append(line)
         content = "\n".join(new_lines)
-        with open(new_file, "w") as fd:
-            fd.write(content.strip() + "\n")
+        Path(new_file).write_text(content.strip() + "\n")
     _logger.info(".po[t] files updated")
     precommit_cmd = (
-        f"pre-commit run --files {' '.join(iglob(f'{glob}/*.po*'))}" "--color=always"
+        f"pre-commit run --files {' '.join(iglob(f'{glob}/*.po*'))} --color=always"
     )
     if not repo and module:
         for folder in iglob(f"{PROJECT_ROOT}/odoo/custom/src/*/*"):
@@ -830,10 +960,7 @@ def _test_in_debug_mode(c, odoo_command):
         with c.cd(str(PROJECT_ROOT)):
             c.run(
                 cmd,
-                env=dict(
-                    UID_ENV,
-                    DOODBA_DEBUGPY_ENABLE="1",
-                ),
+                env=UID_ENV | {"DOODBA_DEBUGPY_ENABLE": "1"},
                 pty=True,
             )
         _logger.info("Waiting for services to spin up...")
@@ -893,6 +1020,7 @@ def _get_module_list(
         "mode": "Mode in which tests run. Options: ['init'(default), 'update']",
         "db_filter": "DB_FILTER regex to pass to the test container Set to ''"
         " to disable. Default: '^devel$'",
+        "tags": "Comma-separated list of tags to test. Default: ',/'.join(modules)",
     },
 )
 def test(
@@ -1010,6 +1138,7 @@ def stop(c, purge=False):
         " Default: True",
         "dependencies": "Install only the dependencies of the specified addons."
         "Default: False",
+        "demo": "Create the DB with demo data. Default: True.",
     },
 )
 def resetdb(
@@ -1022,6 +1151,7 @@ def resetdb(
     dbname="devel",
     populate=True,
     dependencies=False,
+    demo=True,
 ):
     """Reset the specified database with the specified modules.
 
@@ -1045,23 +1175,12 @@ def resetdb(
         )
         lang = os.getenv("INITIAL_LANG")
         lang_opt = f" --lang {lang}" if lang else ""
-        if ODOO_VERSION >= 19:
-            # Odoo 19: Registry.new(force_demo=...) removed → avoid click-odoo-initdb
-            # Use native Odoo CLI; --without-demo=all replaces force_demo=False
-            lang_opt19 = f" --load-language={lang}" if lang else ""
-            c.run(
-                f"{_run} odoo --stop-after-init -d {dbname} -i {modules}"
-                f"{lang_opt19} --without-demo=all",
-                env=UID_ENV,
-                pty=True,
-            )
-        else:
-            # Older versions keep using click-odoo-initdb
-            c.run(
-                f"{_run} click-odoo-initdb -n {dbname} -m {modules}{lang_opt}",
-                env=UID_ENV,
-                pty=True,
-            )
+        demo_opt = " --demo" if demo else " --no-demo"
+        c.run(
+            f"{_run} click-odoo-initdb -n {dbname} -m {modules}{lang_opt}{demo_opt}",
+            env=UID_ENV,
+            pty=True,
+        )
     if populate and ODOO_VERSION < 11:
         _logger.warn(
             f"Skipping populate task as it is not available in v{ODOO_VERSION}"
@@ -1224,10 +1343,10 @@ def restore_snapshot(
                     db_list.append((db_name, db_date))
                 except ValueError:
                     continue
-            snapshot_name = max(db_list, key=lambda x: x[1])[0]
+            snapshot_name = max(db_list, key=operator.itemgetter(1))[0]
             if not snapshot_name:
                 raise exceptions.PlatformError(
-                    "No snapshot found for destination_db %s" % destination_db  # noqa: UP031
+                    f"No snapshot found for destination_db {destination_db}"
                 )
         _logger.info("Restoring snapshot %s to %s", (snapshot_name, destination_db))
         _run = f"{DOCKER_COMPOSE_CMD} run --rm -l traefik.enable=false odoo"

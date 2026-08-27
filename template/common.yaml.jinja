@@ -1,4 +1,4 @@
-{% import "_macros.jinja" as macros -%}
+{% import "macros/_macros.jinja" as macros -%}
 {% if compose_version == "v1" %}
 version: "2.4"
 
@@ -110,6 +110,9 @@ services:
       PGUSER: *dbuser
       {%- if smtp_relay_host %}
       SMTP_HOST: smtplocal
+      {%- if not backup_smtp_report_success %}
+      SMTP_REPORT_SUCCESS: False
+      {%- endif %}
       {%- endif %}
       TZ: "{{ backup_tz }}"
     volumes:

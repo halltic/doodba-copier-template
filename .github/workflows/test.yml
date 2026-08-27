@@ -28,8 +28,22 @@ env:
   PYTHONIOENCODING: "UTF-8"
 
 jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: &checkout actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: &setup-python actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - uses: snok/install-poetry@a783c322200f0519c7926aa6faa857c4e23e9263 # v1.4.2
+        with:
+          version: 2.4.1
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
   test:
     runs-on: ubuntu-latest
+    needs: pre-commit
     strategy:
       matrix:
         odoo-version: ["19.0"]
@@ -69,25 +83,24 @@ jobs:
 
     steps:
       # Shared steps
-      - uses: actions/checkout@v6
+      - uses: *checkout
         with:
           fetch-depth: 0 # Fetch all history for all tags and branches
       - name: Install python
-        uses: actions/setup-python@v6
+        uses: *setup-python
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install Compose
-        uses: ndeloof/install-compose-action@c036dce35dc2a23597c03aa05f32347b2cfa0437
+      - name: Set up Docker Compose
+        uses: docker/setup-compose-action@16feee727cbdc83b6a014e6cc26fec4a79bcf30c # v2.2.0
         with:
-          version: v2.26.0
-          legacy: false # force V2
+          version: v2.40.3
       - name: Generate cache key CACHE
         run:
           echo "CACHE=${{ secrets.CACHE_DATE }} ${{ runner.os }} $(python -VV |
           sha256sum | cut -d' ' -f1) ${{ hashFiles('pyproject.toml') }} ${{
           hashFiles('poetry.lock') }} ${{ hashFiles('.pre-commit-config.yaml') }}" >>
           $GITHUB_ENV
-      - uses: actions/cache@v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: |
             .cache.~
