@@ -1,8 +1,8 @@
 {% import "macros/_macros.jinja" as macros -%}
-{% if compose_version == "v1" %}
+{% if compose_version == "v1" -%}
 version: "2.4"
 
-{% endif %}
+{% endif -%}
 services:
   odoo:
     {%- if odoo_oci_image %}
@@ -17,11 +17,13 @@ services:
         ODOO_VERSION: "{{ macros.version_minor(odoo_version) }}"
         UID: "${UID:-1000}"
         GID: "${GID:-1000}"
+        GITHUB_TOKEN: "${DOODBA_GITHUB_TOKEN:-}"
     environment:
       EMAIL_FROM: "{{ smtp_default_from|default("", true) }}"
       PGDATABASE: &dbname {{ postgres_dbname }}
       PGUSER: &dbuser "{{ postgres_username }}"
       PROXY_MODE: "{% if odoo_proxy %}true{% else %}false{% endif %}"
+      GITHUB_TOKEN: "${DOODBA_GITHUB_TOKEN:-}"
     tty: true
     volumes:
       - filestore:/var/lib/odoo
@@ -32,7 +34,17 @@ services:
       traefik.frontend.passHostHeader: "true"
       traefik.port: "8069"
     {%- endif %}
-
+  gatekeeper:
+    image: ghcr.io/tecnativa/egress-gatekeeper:latest
+    cap_add:
+      - NET_ADMIN
+    {%- if odoo_proxy == "traefik" %}
+    labels:
+      traefik.backend.buffering.retryExpression: IsNetworkError() && Attempts() < 5
+      traefik.docker.network: "inverseproxy_shared"
+      traefik.frontend.passHostHeader: "true"
+      traefik.port: "8069"
+    {%- endif %}
   {% if postgres_version -%}
   db:
     image: ghcr.io/tecnativa/postgres-autoconf:{{ postgres_version }}-alpine
@@ -45,6 +57,13 @@ services:
         work_mem = 512MB
     volumes:
       - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d $$POSTGRES_DB -U $$POSTGRES_USER"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+      start_interval: 1s
   {%- endif %}
 
   smtpfake:
@@ -86,7 +105,7 @@ services:
       }}"
       SRS_SENDER_CLASSES: envelope_sender,header_sender
   {%- endif %}
-  {%- if backup_dst and postgres_version|int >= 10 %}
+  {%- if backup_dst and postgres_version|float >= 10 %}
 
   backup:
     image: ghcr.io/tecnativa/docker-duplicity-postgres{% if backup_dst.startswith(('boto3+s3://', 's3://', 's3+http://')) %}-s3{% endif %}:{{ backup_image_version }}
